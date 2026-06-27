@@ -1,0 +1,17 @@
+هذه نسخة آمنة من ملف التصميم لا تغيّر تعديلات Meta/RSVP.
+
+ارفعي فقط هذه الملفات إذا تريدين أصول التصميم:
+- client/public/assets/*
+
+لا ترفعين من ملف التصميم الأصلي هذه الملفات لأنها تتعارض مع المشروع الحالي:
+- package.json
+- vercel.json
+- api/*
+- server/*
+- .env.example
+- .env.vercel.ready
+
+مجلد docs/static-design-reference يحتوي نسخة التصميم القديمة كمرجع فقط، ولا يؤثر على الموقع.
+
+ملاحظة مهمة:
+رفع assets فقط لن يغير صفحة React تلقائياً. إذا تريدين نفس التصميم القديم يظهر في الموقع الحالي، لازم تحويل index.html/styles.css/app.js إلى صفحة React داخل client/src/pages، أو استبدال صفحة LandingPage الحالية بعناية.
