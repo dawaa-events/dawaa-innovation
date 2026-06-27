@@ -32,7 +32,7 @@ import { handleRsvpClick, handleCardCountSelection } from "./rsvp-handler";
 import { sendRsvpConfirmed, sendRsvpDeclined } from "./meta-api";
 import { sendCardCountSelection } from "./meta-interactive";
 
-const VERIFY_TOKEN = process.env.META_WEBHOOK_VERIFY_TOKEN || "dawaa_webhook_2024";
+const VERIFY_TOKEN = process.env.META_WEBHOOK_VERIFY_TOKEN || process.env.VERIFY_TOKEN || "dawaa2026";
 
 export function registerMetaWebhook(app: Router) {
   // GET: Webhook verification (required by Meta)
@@ -54,9 +54,10 @@ export function registerMetaWebhook(app: Router) {
 
   // POST: Receive webhook events from Meta
   app.post("/api/webhook/meta", async (req, res) => {
-    // Always respond 200 immediately to Meta (within 20 seconds)
-    res.status(200).send("OK");
-
+    // IMPORTANT FOR VERCEL / SERVERLESS:
+    // Do NOT send the response before processing. Some serverless runtimes freeze
+    // execution immediately after res.send(), which causes RSVP updates and
+    // confirmation templates to never run. Process first, then return 200.
     try {
       const body = req.body;
       console.log("[Webhook] Received:", JSON.stringify(body, null, 2));
@@ -70,6 +71,9 @@ export function registerMetaWebhook(app: Router) {
 
       if (body.object !== "whatsapp_business_account") {
         console.log("[Webhook] Not a WhatsApp event, ignoring");
+        if (!res.headersSent) {
+          res.status(200).send("OK");
+        }
         return;
       }
 
@@ -89,18 +93,60 @@ export function registerMetaWebhook(app: Router) {
           }
         }
       }
+      if (!res.headersSent) {
+        res.status(200).send("OK");
+      }
     } catch (error) {
       console.error("[Webhook] Error processing event:", error);
       // Log error to DB too
       try {
         await logWebhookEvent({ eventType: 'meta_webhook_error', payload: { error: String(error), body: req.body } });
       } catch (_) {}
+
+      // Meta expects 200 for webhook receipt. Return 200 even when internal
+      // processing fails so Meta does not repeatedly retry the same event; the
+      // failure is visible in webhook_logs / Vercel logs.
+      if (!res.headersSent) {
+        res.status(200).send("OK");
+      }
     }
   });
 }
 
+function mapRsvpButtonId(rawValue: string | undefined | null): "btn_confirm" | "btn_decline" | "btn_unknown" {
+  const value = String(rawValue || "").trim().toLowerCase();
+
+  // Decline must be checked first because Arabic decline text may contain
+  // the word حضور as part of "أعتذر عن الحضور".
+  if (
+    value.includes("btn_decline") ||
+    value.includes("decline") ||
+    value.includes("أعتذر") ||
+    value.includes("اعتذر") ||
+    value.includes("معتذر") ||
+    value.includes("عذر") ||
+    value.includes("لا استطيع") ||
+    value.includes("لا أستطيع")
+  ) {
+    return "btn_decline";
+  }
+
+  if (
+    value.includes("btn_confirm") ||
+    value.includes("confirm") ||
+    value.includes("أرغب") ||
+    value.includes("ارغب") ||
+    value.includes("حاضر") ||
+    value.includes("حضور")
+  ) {
+    return "btn_confirm";
+  }
+
+  return "btn_unknown";
+}
+
 async function processMessage(message: any, value: any) {
-  const fromPhone = message.from; // e.g. "96899890431"
+  const fromPhone = message.from || value?.contacts?.[0]?.wa_id; // e.g. "96899890431"
   const messageType = message.type;
 
   console.log(`[Webhook] Message from ${fromPhone}, type: ${messageType}`);
@@ -141,11 +187,14 @@ async function processMessage(message: any, value: any) {
 
   // Handle interactive button reply (newer Meta API format)
   if (messageType === "interactive" && message.interactive?.type === "button_reply") {
-    const buttonId = message.interactive.button_reply.id; // "btn_confirm" or "btn_decline"
+    const rawButtonId = message.interactive.button_reply.id;
     const buttonTitle = message.interactive.button_reply.title;
+    const buttonId = mapRsvpButtonId(rawButtonId) !== "btn_unknown"
+      ? mapRsvpButtonId(rawButtonId)
+      : mapRsvpButtonId(buttonTitle);
     const contextMessageId = message.context?.id;
 
-    console.log(`[Webhook] Interactive button press: ${buttonId} ("${buttonTitle}") from ${fromPhone}`);
+    console.log(`[Webhook] Interactive button press: ${rawButtonId} ("${buttonTitle}") from ${fromPhone} → ${buttonId}`);
 
     try {
       await logWebhookEvent({ 
@@ -166,19 +215,12 @@ async function processMessage(message: any, value: any) {
 
     console.log(`[Webhook] Quick reply button press: "${buttonPayload}" from ${fromPhone}`);
 
-    // Map button payload text to buttonId
-    // IMPORTANT: Check for DECLINE keywords FIRST, because "اعتذر عن الحضور" contains "حضور"
-    let buttonId = 'btn_unknown';
-    const payloadLower = buttonPayload.toLowerCase();
-    
-    // Check for decline FIRST (before confirm)
-    if (payloadLower.includes('اعتذر') || payloadLower.includes('أعتذر') || payloadLower.includes('decline') || payloadLower.includes('عذر')) {
-      buttonId = 'btn_decline';
-    } 
-    // Then check for confirm
-    else if (payloadLower.includes('ارغب') || payloadLower.includes('أرغب') || payloadLower.includes('confirm') || payloadLower.includes('حضور')) {
-      buttonId = 'btn_confirm';
-    }
+    // Map button payload/text to a stable buttonId. Payload sometimes comes
+    // as "btn_confirm" and sometimes as the Arabic button text itself.
+    const buttonIdFromPayload = mapRsvpButtonId(buttonPayload);
+    const buttonId = buttonIdFromPayload !== "btn_unknown"
+      ? buttonIdFromPayload
+      : mapRsvpButtonId(buttonText);
 
     console.log(`[Webhook] Mapped to buttonId: ${buttonId}`);
 
@@ -195,6 +237,19 @@ async function processMessage(message: any, value: any) {
 
 async function handleRsvpButton(phoneNumber: string, buttonId: string, contextMessageId?: string) {
   try {
+    if (!phoneNumber) {
+      console.error(`[Webhook] Missing phone number for RSVP button: ${buttonId}`);
+      return;
+    }
+
+    if (buttonId === "btn_unknown") {
+      console.error(`[Webhook] Unknown RSVP button for phone ${phoneNumber}`);
+      try {
+        await logWebhookEvent({ eventType: 'rsvp_unknown_button', payload: { phoneNumber, buttonId, contextMessageId } });
+      } catch (_) {}
+      return;
+    }
+
     // Find the guest by phone number
     const guest = await getGuestByPhone(phoneNumber);
 

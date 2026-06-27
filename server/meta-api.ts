@@ -9,8 +9,8 @@
  * - dawaa_rsvp_declined: 0 params (no components needed)
  */
 
-const META_API_VERSION = "v25.0";
-const PHONE_NUMBER_ID = process.env.META_PHONE_NUMBER_ID || "";
+const META_API_VERSION = process.env.META_API_VERSION || "v25.0";
+const PHONE_NUMBER_ID = process.env.META_PHONE_NUMBER_ID || process.env.PHONE_NUMBER_ID || "";
 const ACCESS_TOKEN = process.env.META_ACCESS_TOKEN || "";
 const META_BASE_URL = "https://graph.facebook.com";
 
