@@ -1,0 +1,14 @@
+{
+  "name": "dawaa-events-vercel-static-api",
+  "version": "1.0.0",
+  "private": true,
+  "type": "commonjs",
+  "scripts": {
+    "check": "node -c api/health.js && node -c api/send-invitations.js && node -c api/webhook/meta.js"
+  },
+  "dependencies": {},
+  "devDependencies": {},
+  "engines": {
+    "node": ">=18"
+  }
+}
